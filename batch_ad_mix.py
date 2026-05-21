@@ -2,24 +2,18 @@
 """
 批量广告混音脚本 - batch_ad_mix.py
 功能：自动分析歌曲特征 → 找最佳广告插入点 → 混音+淡出+裁剪
-依赖：pip install librosa pydub imageio-ffmpeg numpy scipy
+依赖：pip install imageio-ffmpeg numpy
 用法：
     python batch_ad_mix.py --music_dir input_music --ad ad/ad.mp3 --out_dir output
 """
 
 import argparse
-import os
 import sys
 import json
 import logging
 import subprocess
 import numpy as np
 from pathlib import Path
-from datetime import datetime
-
-import librosa
-import soundfile as sf
-from pydub import AudioSegment
 
 # ── FFmpeg 路径（imageio-ffmpeg 自带）─────────────────────────────
 import imageio_ffmpeg
@@ -41,19 +35,44 @@ log = logging.getLogger("batch_ad_mix")
 
 def analyze_audio(audio_path: str, sr: int = 22050):
     """
-    用 librosa 分析音频，返回：
+    用 FFmpeg 解码为 mono float32 后分析音频，返回：
       - duration: 总时长（秒）
       - rms_energy: 每帧 RMS 能量数组（跟 music_length 对应）
       - rms_times:  每帧起始时间数组
       - rms_smooth: 能量平滑值（用于找低能量段）
     """
     log.info(f"分析音频: {audio_path}")
-    y, sr = librosa.load(audio_path, sr=sr, mono=True)
-    duration = librosa.get_duration(y=y, sr=sr)
+    cmd = [
+        FFMPEG_BIN,
+        "-v", "error",
+        "-i", audio_path,
+        "-vn",
+        "-ac", "1",
+        "-ar", str(sr),
+        "-f", "f32le",
+        "-",
+    ]
+    result = subprocess.run(cmd, capture_output=True, timeout=300)
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        raise RuntimeError(f"FFmpeg 解码失败: {stderr[-500:]}")
+
+    y = np.frombuffer(result.stdout, dtype=np.float32)
+    duration = len(y) / sr
+
     # 帧长 2048，hop 512 → 约 43ms/帧
     hop_length = 512
-    rms = librosa.feature.rms(y=y, hop_length=hop_length, frame_length=2048)[0]
-    times = librosa.times_like(rms, sr=sr, hop_length=hop_length)
+    frame_length = 2048
+    if len(y) < frame_length:
+        y = np.pad(y, (0, frame_length - len(y)))
+
+    frame_count = max(1, 1 + (len(y) - frame_length) // hop_length)
+    starts = np.arange(frame_count) * hop_length
+    rms = np.empty(frame_count, dtype=np.float32)
+    for i, start in enumerate(starts):
+        frame = y[start:start + frame_length]
+        rms[i] = np.sqrt(np.mean(frame * frame))
+    times = starts / sr
 
     # 平滑能量（移动均值，窗口约 1 秒）
     window_size = max(1, int(sr / hop_length * 1.0))
@@ -350,8 +369,8 @@ def get_duration_ffprobe(audio_path: str) -> float:
         data = json.loads(result.stdout)
         return float(data["format"]["duration"])
     except Exception:
-        # 回退：用 librosa
-        return librosa.get_duration(path=audio_path)
+        analysis = analyze_audio(audio_path)
+        return analysis["duration"]
 
 
 # ═══════════════════════════════════════════════════════════════════
