@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.git/
+.gitignore
+input/
+output/
+ad/
+*.md
+.DS_Store
+广告混音工具/

@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  ad-mixer:
+    build: .
+    container_name: ad-music-mixer
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      # 可选：挂载临时目录到宿主机方便调试
+      - ./tmp:/tmp/ad_mix_api
